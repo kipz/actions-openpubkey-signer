@@ -1,6 +1,6 @@
-# actions-oidc-debugger
+# actions-openpubkey-signer
 
-This action requests a JWT and prints the claims included within the JWT received from GitHub Actions.
+This action generates an ephemeral public/private keypair, signs things with private key, and uses OIDC to prove posession of the associate public key
 
 ## How to use this Action
 
@@ -12,22 +12,22 @@ Here's an example of how that is done:
 on: [pull_request]
 
 jobs:
-  oidc_debug_test:
+  oidc_sign:
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    name: A test of the oidc debugger
+    name: sign binary
     steps:
-      - name: Checkout actions-oidc-debugger
+      - name: Checkout actions-openpubkey-signer
         uses: actions/checkout@v3
         with:
-          repository: github/actions-oidc-debugger
+          repository: kipz/actions-openpubkey-signer
           ref: main
-          token: ${{ secrets.your-checkout-token }}
-          path: ./.github/actions/actions-oidc-debugger
-      - name: Debug OIDC Claims
-        uses: ./.github/actions/actions-oidc-debugger
+          #token: ${{ secrets.your-checkout-token }}
+          path: ./.github/actions/actions-openpubkey-signer
+      - name: Sign with OpenPubKey
+        uses: ./.github/actions/actions-openpubkey-signer
         with:
-          audience: 'https://github.com/github'
+          path: 'binary-to-sign'
 ```

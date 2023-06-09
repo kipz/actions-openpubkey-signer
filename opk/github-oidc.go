@@ -1,4 +1,4 @@
-package actionsoidc
+package opk
 
 import (
 	"encoding/json"

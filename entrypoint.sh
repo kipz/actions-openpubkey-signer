@@ -2,4 +2,4 @@
 
 cd /
 
-go run cmd/oidc-debug.go -audience $1
+go run cmd/opk-sign.go
