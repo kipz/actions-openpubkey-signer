@@ -1,6 +1,13 @@
 # actions-openpubkey-signer
 
-This action generates an ephemeral public/private keypair, signs things with private key, and uses OIDC to prove posession of the associate public key
+This action generates an ephemeral public/private keypair, signs things with private key, and uses OIDC to prove posession of the associated public key
+
+Based on https://eprint.iacr.org/2023/296.pdf
+
+But with two notable differences:
+
+1. To work on GitHub actions, the 'audience' claim is used
+2. The signature itself is added to the audience too. This ensures that if the key pair can only be used once.
 
 ## How to use this Action
 
