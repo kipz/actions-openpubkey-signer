@@ -2,4 +2,4 @@
 
 cd /
 
-go run cmd/opk-sign.go
+go run cmd/opk-sign.go $1
