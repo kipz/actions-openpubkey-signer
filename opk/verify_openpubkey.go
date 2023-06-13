@@ -322,3 +322,12 @@ func verifyNonce(cic *CIC, payloadStr string) error {
 	fmt.Println("✅ Verified nonce in OIDC payload matches header")
 	return nil
 }
+
+func PrettyPrintOpenPubKey(key *OpenPubKey) {
+	fmt.Println("🔎 Decoded OPK")
+	fmt.Println("  - Payload: ", key.Payload)
+	for i, sig := range key.Signatures {
+		fmt.Println(i, "  - Protected: ", sig.Protected)
+		fmt.Println(i, "  - Signature: ", sig.Signature)
+	}
+}

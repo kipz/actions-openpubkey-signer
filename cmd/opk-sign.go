@@ -14,5 +14,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("Signed OpenPubKey for input %s, %s\n", input, jwt)
+
+	fmt.Printf("Signed OpenPubKey for input %s\n", input)
+	opk.PrettyPrintOpenPubKey(jwt)
 }

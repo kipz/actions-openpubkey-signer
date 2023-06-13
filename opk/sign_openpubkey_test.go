@@ -75,7 +75,6 @@ func TestSigning(t *testing.T) {
 	}
 	toSign := []byte("hello")
 	jwt, _ := SignedOpenPubKey(&toSign, provider)
-
 	err := VerifyOPK(jwt, provider, ids)
 	if err != nil {
 		t.Errorf("Failed to verify signature: %s", err)
