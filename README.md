@@ -29,5 +29,5 @@ jobs:
       - name: Sign with OpenPubKey
         uses: ./.github/actions/actions-openpubkey-signer
         with:
-          path: 'binary-to-sign'
+          message: 'digest-to-sign'
 ```
