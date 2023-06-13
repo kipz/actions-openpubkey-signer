@@ -3,82 +3,66 @@ package opk
 import (
 	"crypto"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/sigstore/cosign/v2/pkg/cosign"
 	"github.com/sigstore/sigstore/pkg/signature"
 )
 
-type SignerVerifier struct {
-	Cert    []byte
-	Chain   []byte
-	IDToken ActionsJWT
-	signature.SignerVerifier
-	close func()
+type GetOIDCToken func(audience string) (*ActionsJWT, error)
+
+type Claims struct {
+	Audience string `json:"aud"`
 }
 
-func openPubkeySigner() (*SignerVerifier, error) {
+type OIDCProvider interface {
+	GetJWT(*Claims) (*ActionsJWT, error)
+	GetPublicKey(string, string) (*rsa.PublicKey, error)
+}
+
+func Sign(payload *[]byte, provider OIDCProvider) (signature.SignerVerifier, *CIC, error) {
 	privKey, err := cosign.GeneratePrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("generating private key: %w", err)
+		return nil, nil, fmt.Errorf("generating private key: %w", err)
 	}
 	sv, err := signature.LoadECDSASignerVerifier(privKey, crypto.SHA256)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	var k *Signer
-
-	if k, err = NewSigner(sv); err != nil {
-		return nil, fmt.Errorf("getting key from Fulcio: %w", err)
+	h := sha256.Sum256(*payload)
+	sig, err := sv.Sign(rand.Reader, h[:], crypto.SHA256)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	return &SignerVerifier{
-		SignerVerifier: k,
-		IDToken:        k.IDToken,
-	}, nil
-}
-
-type Signer struct {
-	IDToken ActionsJWT
-	signature.SignerVerifier
-}
-
-func GetToken(signer signature.SignerVerifier, audience string) (*ActionsJWT, error) {
-	c := DefaultOIDCClient(audience)
-	jwt, err := c.GetJWT()
-	QuitOnErr(err)
-
-	jwt.Parse()
-	return jwt, nil
-}
-
-func NewSigner(signer signature.SignerVerifier) (*Signer, error) {
-
 	// generate nonce
 	rz := make([]byte, 32)
 	rand.Read(rz)
 
-	key, err := signer.PublicKey()
+	key, err := sv.PublicKey()
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
 	pem, err := PubToPem(key)
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
-	cic := NewCIC("ES256", pem, rz)
-	audience := cic.Hash()
-
-	token, err := GetToken(signer, audience) // TODO, use the chain.
+	withSig := SHA512(rz, sig)
+	cic := NewCIC("ES256", pem, withSig)
+	return sv, cic, nil
+}
+func SignedOpenPubKey(payload *[]byte, provider OIDCProvider) (*OpenPubKey, error) {
+	sv, cic, err := Sign(payload, provider)
 	if err != nil {
-		return nil, fmt.Errorf("retrieving cert: %w", err)
+		return nil, err
 	}
-
-	f := &Signer{
-		SignerVerifier: signer,
-		IDToken:        *token,
+	claims := &Claims{
+		Audience: cic.Hash(),
 	}
-
-	return f, nil
+	token, err := provider.GetJWT(claims)
+	if err != nil {
+		return nil, err
+	}
+	return NewOpenPubKey(token, sv, cic), nil
 }

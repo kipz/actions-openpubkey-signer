@@ -18,9 +18,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/sigstore/cosign/v2/pkg/cosign"
-
+	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/sigstore/sigstore/pkg/signature"
 )
 
@@ -103,10 +101,10 @@ func (c *CIC) Hash() string {
 	return hex.EncodeToString(sha)
 }
 
-func NewOpenPubKey(parsedToken map[string]any, sv signature.SignerVerifier, cic *CIC) *OpenPubKey {
-	header, _ := json.Marshal(parsedToken["header"].(map[string]any))
+func NewOpenPubKey(jwt *ActionsJWT, sv signature.SignerVerifier, cic *CIC) *OpenPubKey {
+	header, _ := json.Marshal(jwt.ParsedToken.Header)
 	opkHeader, _ := json.Marshal(cic)
-	payload := parsedToken["rawPayload"].(string)
+	payload := jwt.ParsedToken.Raw
 	opkSig, err := sv.SignMessage(bytes.NewBufferString(payload))
 	if err != nil {
 		panic(err)
@@ -117,7 +115,7 @@ func NewOpenPubKey(parsedToken map[string]any, sv signature.SignerVerifier, cic 
 			{
 
 				Protected: base64.RawURLEncoding.EncodeToString(header),
-				Signature: parsedToken["signature"].(string),
+				Signature: jwt.ParsedToken.Signature,
 			},
 			{
 				Protected: base64.RawURLEncoding.EncodeToString(opkHeader),
@@ -127,97 +125,136 @@ func NewOpenPubKey(parsedToken map[string]any, sv signature.SignerVerifier, cic 
 	}
 }
 
-func ValidateOPK(idToken []byte, co *cosign.CheckOpts) (signature.Verifier, error) {
-	var opk OpenPubKey
-	err := json.Unmarshal(idToken, &opk)
+func VerifyOPK(jwt *OpenPubKey, provider OIDCProvider, ids *[]Identity) error {
+	payload, opkSignature := jwt.Payload, jwt.Signatures[1]
+
+	cic, err := VerifyOPKSignature(opkSignature, payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to json decode OPK: %w", err)
+		return fmt.Errorf("failed to verify opk signature: %w", err)
 	}
 
-	payload, ourSigWrapper, theirSigWrapper := opk.Payload, opk.Signatures[1], opk.Signatures[0]
-
-	verifier, cic, err := verifyOurSigWrapper(ourSigWrapper, payload)
+	err = VerifyOIDCSignature(jwt.Signatures[0], payload, provider, ids)
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify our signature: %w", err)
+		return fmt.Errorf("failed to verify oidc signature: %w", err)
 	}
-
-	err = verifyTheirSigWrapper(theirSigWrapper, payload, co)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify their signature: %w", err)
-	}
-
 	err = verifyNonce(cic, payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify nonce: %w", err)
+		return fmt.Errorf("failed to verify nonce: %w", err)
 	}
-
-	return verifier, nil
+	return nil
 }
 
-func verifyOurSigWrapper(sigWrapper OPKSignature, payload string) (signature.Verifier, *CIC, error) {
+func VerifyOPKSignature(sigWrapper OPKSignature, payload string) (*CIC, error) {
 	protectedJSON, err := base64.RawURLEncoding.DecodeString(sigWrapper.Protected)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to base64 decode protected: %w", err)
+		return nil, fmt.Errorf("failed to base64 decode protected: %w", err)
 	}
 
 	var protected CIC
 	err = json.Unmarshal(protectedJSON, &protected)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to json decode our protected: %w", err)
+		return nil, fmt.Errorf("failed to json decode our protected: %w", err)
 	}
 
 	if protected.Algorithm != "ES256" {
-		return nil, nil, fmt.Errorf("expected ES256 alg, got %q", protected.Algorithm)
+		return nil, fmt.Errorf("expected ES256 alg, got %q", protected.Algorithm)
 	}
 
 	pubKeyPEM := protected.PublicKey
 	pubKey, err := PemToPub(pubKeyPEM)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to decode our public key: %w", err)
+		return nil, fmt.Errorf("failed to decode our public key: %w", err)
 	}
 
 	sig, err := base64.RawURLEncoding.DecodeString(sigWrapper.Signature)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to base64 decode our signature: %w", err)
+		return nil, fmt.Errorf("failed to base64 decode our signature: %w", err)
 	}
 
 	verifier, err := signature.LoadECDSAVerifier(pubKey.(*ecdsa.PublicKey), crypto.SHA256)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to LoadECDSAVerifier: %w", err)
+		return nil, fmt.Errorf("failed to LoadECDSAVerifier: %w", err)
 	}
 
 	err = verifier.VerifySignature(bytes.NewReader(sig), bytes.NewReader([]byte(payload)))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to verify our signature: %w", err)
+		return nil, fmt.Errorf("failed to verify our signature: %w", err)
 	}
 
 	fmt.Println("✅ Verified signing key in OPK was used to sign OPK payload")
 
-	return verifier, &protected, nil
+	return &protected, nil
 }
 
-func verifyTheirSigWrapper(sigWrapper OPKSignature, payloadStr string, co *cosign.CheckOpts) error {
+type Identity struct {
+	Subject string `json:"subject"`
+	Issuer  string `json:"issuer"`
+}
+
+func GetOIDCPublicKey(issueUrl string, kid string) (*rsa.PublicKey, error) {
+	fmt.Println("🔎 Fetching OIDC discovery URL: %w", issueUrl)
+
+	oidcDiscResp, err := http.Get(issueUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to OIDC discovery URL: %w", err)
+	}
+
+	defer oidcDiscResp.Body.Close()
+
+	if oidcDiscResp.StatusCode != 200 {
+		return nil, fmt.Errorf("got %v from OIDC discovery URL", oidcDiscResp.StatusCode)
+	}
+
+	var oidcResp map[string]any
+	decoder := json.NewDecoder(oidcDiscResp.Body)
+	err = decoder.Decode(&oidcResp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to json decode payload: %w", err)
+	}
+
+	jwksURI := oidcResp["jwks_uri"].(string)
+	fmt.Println("🔎 Fetching JWKS URL: %w", jwksURI)
+
+	jwks, err := jwk.Fetch(context.TODO(), jwksURI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch to JWKS: %w", err)
+	}
+
+	key, ok := jwks.LookupKeyID(kid)
+	if !ok {
+		return nil, fmt.Errorf("couldn't find key %q in JWKS", kid)
+	}
+
+	var pubKey rsa.PublicKey
+	err = key.Raw(&pubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode RSA key: %w", err)
+	}
+	return &pubKey, nil
+}
+
+func VerifyOIDCSignature(sigWrapper OPKSignature, payloadStr string, provider OIDCProvider, ids *[]Identity) error {
 	protectedJSON, err := base64.RawURLEncoding.DecodeString(sigWrapper.Protected)
 	if err != nil {
 		return fmt.Errorf("failed to base64 decode protected: %w", err)
 	}
-
-	// TODO: use a struct here
+	fmt.Printf("🔎 Decoded protected: %s\n", string(protectedJSON))
 	var protected map[string]string
 	err = json.Unmarshal(protectedJSON, &protected)
 	if err != nil {
 		return fmt.Errorf("failed to json decode their protected: %w", err)
 	}
+	fmt.Printf("🔎 Unmarshalled protected: %s\n", protected)
 
 	if protected["alg"] != "RS256" {
 		return fmt.Errorf("expected RS256 alg")
 	}
-
+	fmt.Printf("🔎 Got alg %s\n", protected["alg"])
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(payloadStr)
 	if err != nil {
 		return fmt.Errorf("failed to base64 decode payload: %w", err)
 	}
-
+	fmt.Printf("🔎 Decoded payload: %s\n", string(payloadJSON))
 	var payload map[string]any
 	err = json.Unmarshal(payloadJSON, &payload)
 	if err != nil {
@@ -225,45 +262,14 @@ func verifyTheirSigWrapper(sigWrapper OPKSignature, payloadStr string, co *cosig
 	}
 
 	issuer := payload["iss"].(string)
-	oidcDiscURI, err := url.JoinPath(issuer, ".well-known/openid-configuration")
+	issuerUrl, err := url.JoinPath(issuer, ".well-known/openid-configuration")
 	if err != nil {
 		return fmt.Errorf("failed to construct OIDC discovery URI: %w", err)
 	}
-
-	oidcDiscResp, err := http.Get(oidcDiscURI)
+	fmt.Printf("🔎 Got issuer %s\n", issuer)
+	pubKey, err := provider.GetPublicKey(issuerUrl, protected["kid"])
 	if err != nil {
-		return fmt.Errorf("failed to make request to OIDC discovery URL: %w", err)
-	}
-
-	defer oidcDiscResp.Body.Close()
-
-	if oidcDiscResp.StatusCode != 200 {
-		return fmt.Errorf("got %v from OIDC discovery URL", oidcDiscResp.StatusCode)
-	}
-
-	var oidcResp map[string]any
-	decoder := json.NewDecoder(oidcDiscResp.Body)
-	err = decoder.Decode(&oidcResp)
-	if err != nil {
-		return fmt.Errorf("failed to json decode payload: %w", err)
-	}
-
-	jwksURI := oidcResp["jwks_uri"].(string)
-
-	jwks, err := jwk.Fetch(context.TODO(), jwksURI)
-	if err != nil {
-		return fmt.Errorf("failed to fetch to JWKS: %w", err)
-	}
-
-	key, ok := jwks.LookupKeyID(protected["kid"])
-	if !ok {
-		return fmt.Errorf("couldn't find key %q in JWKS", protected["kid"])
-	}
-
-	var pubKey rsa.PublicKey
-	err = key.Raw(&pubKey)
-	if err != nil {
-		return fmt.Errorf("failed to decode RSA key: %w", err)
+		return fmt.Errorf("failed to get public key: %w", err)
 	}
 
 	sig, err := base64.RawURLEncoding.DecodeString(sigWrapper.Signature)
@@ -271,18 +277,19 @@ func verifyTheirSigWrapper(sigWrapper OPKSignature, payloadStr string, co *cosig
 		return fmt.Errorf("failed to base64 decode signature: %w", err)
 	}
 
+	fmt.Println("🔎 Hashing input: ", sigWrapper.Protected, ".", payloadStr)
 	signingInput := fmt.Sprint(sigWrapper.Protected, ".", payloadStr)
 
-	err = rsa.VerifyPKCS1v15(&pubKey, crypto.SHA256, SHA256([]byte(signingInput)), sig)
+	err = rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, SHA256([]byte(signingInput)), sig)
 	if err != nil {
 		return fmt.Errorf("failed to verify signature: %w", err)
 	}
 
 	fmt.Println("✅ Verified OIDC payload was signed by", issuer)
 
-	subject := payload["email"].(string)
-	if len(co.Identities) > 0 {
-		for _, id := range co.Identities {
+	subject := payload["sub"].(string)
+	if len(*ids) > 0 {
+		for _, id := range *ids {
 			if id.Issuer == issuer && id.Subject == subject {
 				return nil
 			}
@@ -301,10 +308,11 @@ func verifyNonce(cic *CIC, payloadStr string) error {
 
 	var payload map[string]any
 	err = json.Unmarshal(payloadJSON, &payload)
+	fmt.Println("🔎 Unmarshalled payload")
 	if err != nil {
 		return fmt.Errorf("failed to json decode payload: %w", err)
 	}
-
+	fmt.Println("🔎 Verifying nonce in OIDC payload")
 	nonce := payload["nonce"].(string)
 
 	if nonce != cic.Hash() {
@@ -312,6 +320,5 @@ func verifyNonce(cic *CIC, payloadStr string) error {
 	}
 
 	fmt.Println("✅ Verified nonce in OIDC payload matches header")
-
 	return nil
 }

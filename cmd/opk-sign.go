@@ -2,15 +2,17 @@ package main
 
 import (
 	"fmt"
+	"os"
 
-	opk "github.com/kipz/actions-openpubkey-signer/opk"
+	"github.com/kipz/actions-openpubkey-signer/opk"
 )
 
 func main() {
-	c := opk.DefaultOIDCClient("foo")
-	jwt, err := c.GetJWT()
-	opk.QuitOnErr(err)
-
-	jwt.Parse()
-	fmt.Print(jwt.PrettyPrintClaims())
+	input := os.Args[1]
+	payload := []byte(input)
+	jwt, err := opk.SignedOpenPubKey(&payload, &opk.GitHubOIDCProvider{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Signed OpenPubKey for input %s, %s\n", input, jwt)
 }

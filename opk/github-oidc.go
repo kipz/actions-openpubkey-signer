@@ -1,6 +1,7 @@
 package opk
 
 import (
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -132,4 +133,31 @@ func (j *ActionsJWT) PrettyPrintClaims() string {
 		return string(jsonClaims)
 	}
 	return ""
+}
+
+func GetActionsToken(audience string) (*ActionsJWT, error) {
+	c := DefaultOIDCClient(audience)
+	jwt, err := c.GetJWT()
+	if err != nil {
+		return nil, err
+	}
+	jwt.Parse()
+	return jwt, nil
+}
+
+type GitHubOIDCProvider struct {
+}
+
+func (p *GitHubOIDCProvider) GetJWT(claims *Claims) (*ActionsJWT, error) {
+	c := DefaultOIDCClient(claims.Audience)
+	jwt, err := c.GetJWT()
+	if err != nil {
+		return nil, err
+	}
+	jwt.Parse()
+	return jwt, nil
+}
+
+func (p *GitHubOIDCProvider) GetPublicKey(issueUrl string, kid string) (*rsa.PublicKey, error) {
+	return GetOIDCPublicKey(issueUrl, kid)
 }

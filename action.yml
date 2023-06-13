@@ -1,11 +1,11 @@
-name: 'OIDC Debugger'
-description: 'Print the GitHub Actions OIDC claims.'
+name: 'OpenPubKey Signer'
+description: 'Sign stuff with OpenPubKey on GitHub actions'
 inputs:
-  audience:
-    description: 'The audience to use when requesting the JWT.'
+  message:
+    description: 'String to sign (e.g. image digest, attestation etc...)'
     required: true
 runs:
   using: 'docker'
   image: 'Dockerfile'
   args:
-    - ${{ inputs.audience }}
+    - ${{ inputs.message }}
